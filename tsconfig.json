@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "resolveJsonModule": true,
+    "esModuleInterop": true,
+    "preserveConstEnums": true,
+    "strict": true,
+    "sourceMap": true,
+    "allowJs": true,
+    "target": "es2019",
+    "outDir": ".build",
+    "allowSyntheticDefaultImports": true,
+    "module": "es2020",
+    "moduleResolution": "node",
+    "lib": ["es2019", "es2020.promise", "es2020.bigint", "es2020.string"],
+    "rootDir": "./",
+    "experimentalDecorators": true,
+    "typeRoots": ["./types", "./node_modules/@types"],
+    "types": ["node", "jest"]
+  },
+  "include": ["modules/**/*", "tests/**/*", "types"],
+  "exclude": ["node_modules"]
+}

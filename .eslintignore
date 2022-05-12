@@ -1,0 +1,8 @@
+node_modules
+/tmp
+# scripts
+# tests
+# typedoc
+# api
+/templates/out.*
+# webpack.config.js

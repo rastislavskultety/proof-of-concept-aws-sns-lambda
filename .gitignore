@@ -1,0 +1,15 @@
+.serverless
+.warmup
+.webpack
+.coverage
+.reports
+.DS_Store
+node_modules
+/boxpi-api
+/deployment
+/samples
+/tmp
+/api/build
+/api/artifacts
+/integration-tests/diff
+/templates/out*

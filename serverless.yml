@@ -1,0 +1,212 @@
+service: proof-of-concept-sns-lambda
+
+unresolvedVariablesNotificationMode: error
+variablesResolutionMode: 20210326
+
+################################################################################################
+# Configure AWS provider
+################################################################################################
+
+provider:
+  # Base provider configuration
+  name: aws
+  runtime: nodejs14.x
+  region: eu-central-1
+  stage: ${opt:stage, '${env:BOXPI_DEV_STAGE, "dev"}'}
+  lambdaHashingVersion: 20201221
+  logRetentionInDays: 7 # number of days to keep logs in CloudWatch
+  # memorySize: 512 # Override the default memory size for lambda functions. Serverless.com default is 1024 MB (AWS default is 128 MB)
+  # timeout: 10 # Override the default timeout for lambda functions. Serverless.com default is 6 seconds (AWS default is 3 seconds). Note: API Gateway current maximum is 30 seconds
+
+  tracing:
+    apiGateway: true # Can only be true if API Gateway is inside a stack.
+    lambda: true # Optional, can be true (true equals 'Active'), 'Active' or 'PassThrough'
+
+  # Default environment variable for lambda functions
+
+  environment:
+    REGION: ${self:provider.region}
+    STAGE: ${self:provider.stage}
+    MODE: delay # Possible values: crash-init, crash-handler or delay
+
+  # Policies for lambda functions
+
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - logs:CreateLogGroup
+        - logs:CreateLogStream
+        - logs:PutLogEvents
+      Resource: "arn:aws:logs:*:*:*"
+    - Effect: Allow
+      Action:
+        - dynamodb:*
+      Resource: "*"
+    - Effect: Allow
+      Action:
+        - ssm:GetParameters
+        - ssm:GetParameter
+      Resource: "*"
+    - Effect: Allow
+      Action:
+        - sqs:*
+      Resource: "*"
+    - Effect: Allow
+      Action:
+        - s3:*
+      Resource: "arn:aws:s3::*:*"
+    - Effect: Allow
+      Action:
+        - sns:*
+      Resource: "*"
+    - Effect: "Allow"
+      Action:
+        - "lambda:InvokeFunction"
+      Resource:
+        - Fn::Join:
+            - ":"
+            - - arn:aws:lambda
+              - "*"
+              - Ref: AWS::AccountId
+              - function:*-${opt:stage, self:provider.stage}-*
+    - Effect: Allow
+      Action:
+        - "ses:SendTemplatedEmail"
+        - "ses:SendEmail"
+      Resource: "*"
+    - Effect: Allow
+      Action:
+        - "sts:*"
+      Resource: "*"
+    - Effect: "Allow" # xray permissions (required)
+      Action:
+        - "xray:PutTraceSegments"
+        - "xray:PutTelemetryRecords"
+      Resource:
+        - "*"
+
+################################################################################################
+# Plugins used for serverless deployment
+################################################################################################
+
+plugins:
+  - serverless-webpack # Bundles lambdas with webpack, see https://www.serverless.com/plugins/serverless-webpack
+
+################################################################################################
+# Lambda service functions
+################################################################################################
+
+functions:
+  test-lambda-function:
+    handler: modules/services/handlers.snsHandler
+    reservedConcurrency: 1
+    timeout: 900
+    onError: !Ref LambdaPushToDlqTopic # Configure dead-letter queue, serverless currently supports only SNS destination
+    events:
+      - sns:
+          arn: !Ref TestTopic
+          topicName: ${self:service}-${self:provider.stage}-test-topic
+          redrivePolicy:
+            deadLetterTargetRef: TestDLQ
+
+################################################################################################
+# Resources
+################################################################################################
+
+resources:
+  Description: Proof of concept sns-lambda
+
+  Resources:
+    TestTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        DisplayName: Test topic for proof-of-concept
+        TopicName: ${self:service}-${self:provider.stage}-test-topic
+
+    TestDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-sns-dlq
+
+    # Update policy to allow SNS to send messages to carrier's SQS
+    TestDLQPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: "*"
+              Action: sqs:SendMessage
+              Resource: !GetAtt TestDLQ.Arn
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn": !Ref TestTopic
+        Queues:
+          - Ref: TestDLQ
+
+    # Currently serverless does not support SQS as dead-letter queue
+    # Therefore we use SNS topic which only push messages to SQS dead-letter queue
+    LambdaPushToDlqTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        DisplayName: SNS push to DLQ topic
+        TopicName: ${self:service}-${self:provider.stage}-push-to-dlq-topic
+
+    # DLQ for lambda
+    LambdaDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:service}-${self:provider.stage}-lambda-dlq
+
+    # Subscription for messages from p
+    #
+    LambdaDLQSubscription:
+      Type: AWS::SNS::Subscription
+      Properties:
+        Protocol: sqs
+        Endpoint: !GetAtt LambdaDLQ.Arn
+        TopicArn: !Ref LambdaPushToDlqTopic
+
+    # Policy to allow SNS to send messages to LambdaDLQ
+    LambdaDLQPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal: "*"
+              Action: sqs:SendMessage
+              Resource: !GetAtt LambdaDLQ.Arn
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn": !Ref LambdaPushToDlqTopic
+
+                  # Fn::Join:
+                  #   - ":"
+                  #   - - arn:aws
+                  #     - !Ref AWS::Region
+                  #     - !Ref AWS::AccountId
+                  #     - function
+                  #     - ${self:service}-${self:provider.stage}-test-sns-handler
+        Queues:
+          - Ref: LambdaDLQ
+
+  Outputs:
+
+################################################################################################
+# Variables
+################################################################################################
+
+custom:
+  accountId: !Ref AWS::AccountId
+
+  webpack:
+    webpackConfig: "webpack.config.js"
+    includeModules:
+      packagePath: "./package.json"
+    packager: "npm"
+    concurrency: 1 # desired concurrency, defaults to the number of available cores
+    serializedCompile: true # backward compatible, this translates to concurrency: 1
+    keepOutputDirectory: true
